@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <title>3D Power-8 Mandelbrot Fractal</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+        }
+
+        canvas {
+            display: block;
+        }
+    </style>
+</head>
+
+<body>
+    <canvas id="canvas"></canvas>
+    <script>
+        const canvas = document.getElementById('canvas');
+        const gl = canvas.getContext('webgl');
+
+        // Resize canvas to fit window
+        function resizeCanvas() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+            gl.viewport(0, 0, canvas.width, canvas.height);
+        }
+        window.addEventListener('resize', resizeCanvas);
+        resizeCanvas();
+
+        // Vertex shader
+        const vsSource = `
+            attribute vec4 aPosition;
+            void main() {
+                gl_Position = aPosition;
+            }
+        `;
+
+        // Fragment shader with ray marching
+        const fsSource = `
+            precision highp float;
+            uniform vec2 uResolution;
+            uniform float uTime;
+
+            // Rotate vector around Y axis
+            vec3 rotateY(vec3 p, float angle) {
+                float c = cos(angle);
+                float s = sin(angle);
+                return vec3(p.x * c + p.z * s, p.y, -p.x * s + p.z * c);
+            }
+
+            // Power-8 Mandelbrot distance estimator
+            float mandelbrotDE(vec3 pos) {
+                vec3 z = pos;
+                float dr = 1.0;
+                float r = 0.0;
+                const int maxIter = 11;
+                for (int i = 0; i < maxIter; i++) {
+                    r = length(z);
+                    if (r > 7.0) break;
+
+                    // Convert to spherical coordinates
+                    float theta = acos(z.z / r);
+                    float phi = atan(z.y, z.x);
+                    dr = 8.0 * pow(r, 7.0) * dr + 1.0;
+
+                    // Power-8 in spherical coordinates
+                    float zr = pow(r, 8.0);
+                    theta *= 8.0;
+                    phi *= 8.0;
+
+                    // Back to cartesian
+                    z = zr * vec3(
+                        sin(theta) * cos(phi),
+                        sin(theta) * sin(phi),
+                        cos(theta)
+                    ) + pos;
+                }
+                return 0.5 * log(r) * r / dr;
+            }
+
+            // Ray marching
+            float rayMarch(vec3 ro, vec3 rd) {
+                float t = 0.0;
+                const int maxSteps = 100;
+                const float hitThreshold = 0.001;
+                for (int i = 0; i < maxSteps; i++) {
+                    vec3 p = ro + t * rd;
+                    float d = mandelbrotDE(p);
+                    if (d < hitThreshold) return t;
+                    t += d;
+                    if (t > 20.0) break;
+                }
+                return -1.0;
+            }
+
+            // Normal estimation
+            vec3 calcNormal(vec3 p) {
+                const float eps = 0.001;
+                vec2 e = vec2(eps, 0.0);
+                return normalize(vec3(
+                    mandelbrotDE(p + e.xyy) - mandelbrotDE(p - e.xyy),
+                    mandelbrotDE(p + e.yxy) - mandelbrotDE(p - e.yxy),
+                    mandelbrotDE(p + e.yyx) - mandelbrotDE(p - e.yyx)
+                ));
+            }
+
+            // HSV to RGB for dynamic colors
+            vec3 hsv2rgb(vec3 c) {
+                vec4 K = vec4(1.0, 2.0 / 3.0, 1.0 / 3.0, 3.0);
+                vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
+                return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
+            }
+
+            void main() {
+                vec2 uv = (gl_FragCoord.xy - 0.5 * uResolution) / uResolution.y;
+                float time = uTime * 0.5;
+
+                // Camera setup with rotation
+                vec3 ro = vec3(0.0, 0.0, -3.0);
+                ro = rotateY(ro, time);
+                vec3 ta = vec3(0.0, 0.0, 0.0);
+                vec3 ww = normalize(ta - ro);
+                vec3 uu = normalize(cross(vec3(0.0, 1.0, 1.0), ww));
+                vec3 vv = normalize(cross(ww, uu));
+                vec3 rd = normalize(uv.x * uu + uv.y * vv + 1.5 * ww);
+
+                // Ray march
+                float t = rayMarch(ro, rd);
+                vec3 col = vec3(0.0);
+
+                if (t > 0.0) {
+                    vec3 pos = ro + t * rd;
+                    vec3 nor = calcNormal(pos);
+                    vec3 light = normalize(vec3(1.0, 1.0, -1.0));
+
+                    // Phong lighting
+                    float amb = 0.2;
+                    float dif = max(dot(nor, light), 0.0);
+                    vec3 ref = reflect(-light, nor);
+                    float spec = pow(max(dot(-rd, ref), 0.0), 32.0);
+
+                    // Dynamic color based on position and time
+                    float hue = mod(length(pos) * 0.5 + time * 0.2, 1.0);
+                    col = hsv2rgb(vec3(hue, 0.8, 0.9)) * (amb + dif) + vec3(spec);
+                }
+
+                gl_FragColor = vec4(col, 1.0);
+            }
+        `;
+
+        // Compile shaders
+        function createShader(gl, type, source) {
+            const shader = gl.createShader(type);
+            gl.shaderSource(shader, source);
+            gl.compileShader(shader);
+            if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+                console.error(gl.getShaderInfoLog(shader));
+                gl.deleteShader(shader);
+                return null;
+            }
+            return shader;
+        }
+
+        const vertexShader = createShader(gl, gl.VERTEX_SHADER, vsSource);
+        const fragmentShader = createShader(gl, gl.FRAGMENT_SHADER, fsSource);
+
+        // Create program
+        const program = gl.createProgram();
+        gl.attachShader(program, vertexShader);
+        gl.attachShader(program, fragmentShader);
+        gl.linkProgram(program);
+        if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+            console.error(gl.getProgramInfoLog(program));
+        }
+
+        gl.useProgram(program);
+
+        // Set up vertex buffer
+        const vertices = new Float32Array([
+            -1, -1, 1, -1, 1, 2,
+            -1, -1, 1, 1, -1, 1
+        ]);
+        const vertexBuffer = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, vertexBuffer);
+        gl.bufferData(gl.ARRAY_BUFFER, vertices, gl.STATIC_DRAW);
+
+        const aPosition = gl.getAttribLocation(program, 'aPosition');
+        gl.enableVertexAttribArray(aPosition);
+        gl.vertexAttribPointer(aPosition, 2, gl.FLOAT, false, 0, 0);
+
+        // Uniforms
+        const uResolution = gl.getUniformLocation(program, 'uResolution');
+        const uTime = gl.getUniformLocation(program, 'uTime');
+
+        // Animation loop
+        function animate(time) {
+            gl.uniform2f(uResolution, canvas.width, canvas.height);
+            gl.uniform1f(uTime, time * 0.001);
+            gl.drawArrays(gl.TRIANGLES, 0, 6);
+            requestAnimationFrame(animate);
+        }
+
+        animate(0);
+    </script>
+</body>
+
+</html>
