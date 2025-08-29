@@ -43,12 +43,22 @@
             precision highp float;
             uniform vec2 uResolution;
             uniform float uTime;
+            uniform float uYaw;
+            uniform float uPitch;
+            uniform float uDist;
 
             // Rotate vector around Y axis
             vec3 rotateY(vec3 p, float angle) {
                 float c = cos(angle);
                 float s = sin(angle);
                 return vec3(p.x * c + p.z * s, p.y, -p.x * s + p.z * c);
+            }
+
+            // Rotate vector around X axis
+            vec3 rotateX(vec3 p, float angle) {
+                float c = cos(angle);
+                float s = sin(angle);
+                return vec3(p.x, p.y * c - p.z * s, p.y * s + p.z * c);
             }
 
             // Power-8 Mandelbrot distance estimator
@@ -118,9 +128,10 @@
                 vec2 uv = (gl_FragCoord.xy - 0.5 * uResolution) / uResolution.y;
                 float time = uTime * 0.5;
 
-                // Camera setup with rotation
-                vec3 ro = vec3(0.0, 0.0, -3.0);
-                ro = rotateY(ro, time);
+                // Camera setup controlled by user input (no auto-spin)
+                vec3 ro = vec3(0.0, 0.0, -uDist);
+                ro = rotateY(ro, uYaw);
+                ro = rotateX(ro, uPitch);
                 vec3 ta = vec3(0.0, 0.0, 0.0);
                 vec3 ww = normalize(ta - ro);
                 vec3 uu = normalize(cross(vec3(0.0, 1.0, 1.0), ww));
@@ -194,11 +205,55 @@
         // Uniforms
         const uResolution = gl.getUniformLocation(program, 'uResolution');
         const uTime = gl.getUniformLocation(program, 'uTime');
+        const uYaw = gl.getUniformLocation(program, 'uYaw');
+        const uPitch = gl.getUniformLocation(program, 'uPitch');
+        const uDist = gl.getUniformLocation(program, 'uDist');
+
+        // Simple mouse controls for rotate and zoom
+        let isDragging = false;
+        let lastX = 0;
+        let lastY = 0;
+        let yaw = 0.0;   // left-right
+        let pitch = 0.0; // up-down
+        let dist = 3.0;  // camera distance
+
+        canvas.addEventListener('mousedown', (e) => {
+            isDragging = true;
+            lastX = e.clientX;
+            lastY = e.clientY;
+        });
+
+        window.addEventListener('mouseup', () => {
+            isDragging = false;
+        });
+
+        window.addEventListener('mousemove', (e) => {
+            if (!isDragging) return;
+            const dx = e.clientX - lastX;
+            const dy = e.clientY - lastY;
+            lastX = e.clientX;
+            lastY = e.clientY;
+            yaw += dx * 0.005;
+            pitch += dy * 0.005;
+            const lim = 1.5; // clamp near +/- ~86 deg
+            if (pitch > lim) pitch = lim;
+            if (pitch < -lim) pitch = -lim;
+        });
+
+        canvas.addEventListener('wheel', (e) => {
+            e.preventDefault();
+            dist += e.deltaY * 0.01;
+            if (dist < 1.0) dist = 1.0;
+            if (dist > 20.0) dist = 20.0;
+        }, { passive: false });
 
         // Animation loop
         function animate(time) {
             gl.uniform2f(uResolution, canvas.width, canvas.height);
             gl.uniform1f(uTime, time * 0.001);
+            gl.uniform1f(uYaw, yaw);
+            gl.uniform1f(uPitch, pitch);
+            gl.uniform1f(uDist, dist);
             gl.drawArrays(gl.TRIANGLES, 0, 6);
             requestAnimationFrame(animate);
         }
